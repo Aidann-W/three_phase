@@ -58,7 +58,7 @@ async function createUser(username, password) {
         const hash = derivedKey.toString('hex');
 
         connection.query(
-            `insert into logins(username,id,hashed,salt,access) values ("${username}",${maxId+1},"${hash}","${salt}",${0})`
+            `insert into logins(username,id,hashed,salt,access) values ("${username}",${maxId()+1},"${hash}","${salt}",${0})`
         );
     } )
 
@@ -163,8 +163,10 @@ async function verifyAccountAccess(user,accountId){
 //transfer between two owned accounts
 
 async function transfer(user,toId,fromId,amount){
+    if(amount < 0)
+        return false;
 if(await verifyAccountAccess(user,toId) && await verifyAccountAccess(user,fromId)&& await verifyBalance(fromId,amount)){
-    let transactionId = await maxTransactionId();
+    let transactionId = await maxTransactionId()+1;
     const [balance,fields1] = await connection.query(
         `Select balance from accounts where acountId =${toId}`
     );
@@ -182,16 +184,17 @@ if(await verifyAccountAccess(user,toId) && await verifyAccountAccess(user,fromId
     await connection.query(
         `update accounts set balance = ${newFromBalance} where acountId=${fromId}`
     );
+return true;
 }
-else console.log("not authorized or no balance");
+return false;
 }
 
 async function adminTransactions(user,fromId,toId,amount){
-    if(user.access=== 0 ){
+    if(user.access=== 0 || amount<0 ){
         return false
     }
 
-    let transactionId = await maxTransactionId();
+    let transactionId = await maxTransactionId()+1;
 
     if(fromId === null){
         //deposit
@@ -262,17 +265,89 @@ const generateKeys = () => {
 let {publicKey, privateKey} = generateKeys();
 
 app.get("/accounts",(req, res) => {
+    const { u, p } = req.query;
 
+    if(!u ||!p)
+        return res.status(400).json({ error: 'invalid input' });
+
+     const user = decryptData(urlSafeToBase64(u));
+     const pass = decryptData(urlSafeToBase64(p));
+
+    getUser(user).then(result => {
+        verifyPassword(pass,result.salt,result.hash,() =>{
+                console.log("accounts of user", getUserAccounts(result));
+                res.status(200).json( getUserAccounts(result));
+        },
+            () => {
+                console.log("PASSWORD INVALID FOR:", user);
+                res.status(403).json("password is invalid");
+            })
+    })
 })
 app.get("/transactions",(req, res) => {
+    const { u, p, Id } = req.query;
 
+    if(!u ||!p || !Id)
+        return res.status(400).json({ error: 'invalid input' });
+
+    const user = decryptData(urlSafeToBase64(u));
+    const pass = decryptData(urlSafeToBase64(p));
+    const accId = decryptData(urlSafeToBase64(Id));
+
+    getUser(user).then(result => {
+        verifyPassword(pass,result.salt,result.hash,() =>{
+                console.log("transaction of account", getTransactions(accId));
+                res.status(200).json( getTransactions(accId));
+            },
+            () => {
+                console.log("PASSWORD INVALID FOR:", user);
+                res.status(403).json("password is invalid");
+            })
+    })
 })
 
 app.post("/logins",(req, res) => {
+const{u, p} =req.body;
+if(!u || !p)
+    return res.status(400).json({ error: 'invalid input' });
+
+    const user = decryptData(u);
+    const pass = decryptData(p);
+    getUser(user).then(result => {
+        if(result){
+            console.log("user exists");
+            res.status(400).json("exists");
+        }
+        else
+            createUser(user,pass)
+                res.status(200).json(result);
+                console.log("created user");
+
+    })
 
 })
 
 app.post("/account",(req, res) => {
+    const{u, p, accType} =req.body;
+    if(!u || !p || !accType)
+        return res.status(400).json({ error: 'invalid input' });
+
+    const id = maxAccountId()+1;
+    const user = decryptData(u);
+    const accountType = decryptData(accType);
+    const pass = decryptData(p);
+    //id accountType, access
+    getUser(user).then(result => {
+        verifyPassword(pass,result.salt,result.hash,() =>{
+                createAccounts(id,accountType,result.id).then(result2 => {
+                    res.status(201).json("created account");
+                    console.log(result2);
+                }) },
+            () => {
+                console.log("PASSWORD INVALID FOR:", user);
+                res.status(403).json("password is invalid");
+            })
+    })
 
 })
 
