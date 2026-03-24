@@ -238,9 +238,10 @@ getUser("boss").then(result => {
     getUserAccounts(result).then(result2 => {
         console.log(result2)
     })
-verifyAccountAccess(result,0).then((result3) => {
+verifyAccountAccess(result,2).then((result3) => {
     console.log(result3 +"account access")
 })
+    transfer(result,1,0,15)
 });
 
 
@@ -296,9 +297,16 @@ app.get("/transactions",(req, res) => {
 
     getUser(user).then(result => {
         verifyPassword(pass,result.salt,result.hash,() =>{
-                console.log("transaction of account", getTransactions(accId));
-                res.status(200).json( getTransactions(accId));
-            },
+            verifyAccountAccess(result,accId).then(result2 => {
+               if(result2) {
+                   console.log("transaction of account", getTransactions(accId));
+                   res.status(200).json(getTransactions(accId));
+               }
+               else{
+                   console.log("no account access");
+                   res.status(200).json("no account access");
+               }
+            })},
             () => {
                 console.log("PASSWORD INVALID FOR:", user);
                 res.status(403).json("password is invalid");
@@ -352,15 +360,94 @@ app.post("/account",(req, res) => {
 })
 
 app.post("/deposit",(req, res) => {
+    const{u, p, toAcc, amount} =req.body;
+    if(!u || !p || !toAcc || !amount)
+        return res.status(400).json({ error: 'invalid input' });
 
+
+    const user = decryptData(u);
+    const depositId = decryptData(toAcc);
+    const depositAmount = decryptData(amount);
+    const pass = decryptData(p);
+    //id accountType, access
+    getUser(user).then(result => {
+        verifyPassword(pass,result.salt,result.hash,() =>{
+                adminTransactions(user,null,depositId,depositAmount).then(result2 => {
+                   if(result2){
+                       res.status(201).json(result2);
+                       console.log("success");
+                   }
+                   else {
+                    console.log("invalid transaction");
+                       res.status(403).json("invalid transaction");
+                   }
+                }) },
+            () => {
+                console.log("PASSWORD INVALID FOR:", user);
+                res.status(403).json("password is invalid");
+            })
+    })
 })
 
 app.post("/withdraw",(req, res) => {
+    const{u, p, fromAcc, amount} =req.body;
+    if(!u || !p || !fromAcc || !amount)
+        return res.status(400).json({ error: 'invalid input' });
 
+
+    const user = decryptData(u);
+    const withdrawId = decryptData(fromAcc);
+    const withdrawAmount = decryptData(amount);
+    const pass = decryptData(p);
+    //id accountType, access
+    getUser(user).then(result => {
+        verifyPassword(pass,result.salt,result.hash,() =>{
+                adminTransactions(user,withdrawId,null,withdrawAmount).then(result2 => {
+                    if(result2){
+                        res.status(201).json(result2);
+                        console.log("success");
+                    }
+                    else {
+                        console.log("invalid transaction");
+                        res.status(403).json("invalid transaction");
+                    }
+                }) },
+            () => {
+                console.log("PASSWORD INVALID FOR:", user);
+                res.status(403).json("password is invalid");
+            })
+    })
 })
 
 app.post("/transfer",(req, res) => {
+    const{u, p, fromAcc, toAcc, amount} =req.body;
+    if(!u || !p || !fromAcc || !amount||!toAcc)
+        return res.status(400).json({ error: 'invalid input' });
 
+
+    const user = decryptData(u);
+    const fromId = decryptData(fromAcc);
+    const toId = decryptData(toAcc);
+    const transferAmount = decryptData(amount);
+    const pass = decryptData(p);
+    //id accountType, access
+    getUser(user).then(result => {
+        verifyPassword(pass,result.salt,result.hash,() =>{
+                transfer(user,toId,fromId,transferAmount).then(result2 => {
+                    if(result2){
+                        res.status(201).json(result2);
+                        console.log("success");
+                    }
+                    else {
+                        console.log("invalid transaction");
+                        res.status(403).json("invalid transaction");
+                    }
+                }) },
+            () => {
+                console.log("PASSWORD INVALID FOR:", user);
+                res.status(403).json("password is invalid");
+            })
+    })
 })
 getUser("aidan").then(result => {console.log(result)});
 getUser("billy bob").then(result => {console.log(result)});
