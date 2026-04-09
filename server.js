@@ -1,17 +1,16 @@
-import mysql from 'mysql2/promise';
-import config from './config.js';
+import mysql from "mysql2/promise";
+import config from "./config.js";
 import express from "express";
 import cors from "cors";
-import bodyParser from "body-parser";
 import crypto from "crypto";
 
 const app = express();
-app.use(cors({
-    methods: ['GET', 'POST'] // Specify allowed methods
-}));
-app.use(bodyParser.json());
+app.use(cors());
+app.use(express.json());
+
 const port = 3000;
 
+// ✅ DB CONNECTION
 const connection = await mysql.createConnection({
     host: config.db.host,
     user: config.db.user,
@@ -20,441 +19,279 @@ const connection = await mysql.createConnection({
     database: config.db.db,
 });
 
+// 🔐 GENERATE KEYS (DEV ONLY)
+const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+});
 
+// 🔐 DECRYPT
+function decryptData(base64Data) {
+    const buffer = Buffer.from(base64Data, "base64");
 
-
-async function getUser(username) {
-    const [results,fields] = await connection.query(
-        `select * from logins where username = "${username}"`
-    );
-    if(results.length > 0) return results[0];
-    else return false
-}
-
-function verifyPassword(inputPassword, storedSalt, storedHash, actionOnSuccess, actionOnFail) {
-    crypto.scrypt(inputPassword, storedSalt, 64, (err, derivedKey) => {
-        if (err) throw err;
-
-
-        const inputHash = derivedKey.toString('hex');
-
-
-        // Compare the newly generated hash with the one stored in the database
-        if(storedHash === inputHash) {
-            actionOnSuccess();
-        } else
-            actionOnFail();
-    });
-}
-
-async function createUser(username, password) {
-    const salt = crypto.randomBytes(16).toString('hex');
-
-
-    crypto.scrypt(password, salt, 64, (err, derivedKey) => {
-        if (err) throw err;
-
-
-        const hash = derivedKey.toString('hex');
-
-        connection.query(
-            `insert into logins(username,id,hashed,salt,access) values ("${username}",${maxId()+1},"${hash}","${salt}",${0})`
-        );
-    } )
-
-}
-
-const urlSafeToBase64 = (urlSafeStr) => {
-    // Add padding back for standard Base64 if needed
-    let standardB64 = urlSafeStr.replace(/-/g, '+').replace(/_/g, '/');
-    while (standardB64.length % 4) {
-        standardB64 += '=';
-    }
-    return standardB64;
-};
-
-
-const decryptData = (base64Data) => {
-    // 1. Convert from encoded string to a buffer
-    const buffer = Buffer.from(base64Data, 'base64');
-
-
-    // 2. Explicitly define padding and hash to match the Web Crypto API
     return crypto.privateDecrypt(
         {
-            key: privateKey, // Your 2048-bit key from generateKeys()
-            oaepHash: "sha256", // MUST BE THIS to match client's "SHA-256"
+            key: privateKey,
+            oaepHash: "sha256",
         },
         buffer
     ).toString("utf8");
-};
-
-async function getTransactions(accountNumber){
-    if(accountNumber >-1) {
-        const [transactions, fields] = await connection.query(
-            `select * from transactions
- where fromAcc = ${accountNumber} or toAcc = ${accountNumber}`
-        );
-        return transactions;
-    }
-    else return false
 }
 
+// 🔐 PASSWORD VERIFY
+function verifyPassword(inputPassword, salt, storedHash) {
+    return new Promise((resolve, reject) => {
+        crypto.scrypt(inputPassword, salt, 64, (err, derivedKey) => {
+            if (err) reject(err);
+            resolve(derivedKey.toString("hex") === storedHash);
+        });
+    });
+}
+
+// 👤 GET USER
+async function getUser(username) {
+    const [rows] = await connection.execute(
+        "SELECT * FROM logins WHERE username = ?",
+        [username]
+    );
+    return rows[0] || null;
+}
+
+// 👤 CREATE USER
+async function createUser(username, password) {
+    const salt = crypto.randomBytes(16).toString("hex");
+
+    const hash = await new Promise((resolve, reject) => {
+        crypto.scrypt(password, salt, 64, (err, key) => {
+            if (err) reject(err);
+            resolve(key.toString("hex"));
+        });
+    });
+
+    await connection.execute(
+        "INSERT INTO logins (username, hashed, salt, access) VALUES (?, ?, ?, 0)",
+        [username, hash, salt]
+    );
+}
+
+// 📊 GET ACCOUNTS
 async function getUserAccounts(user) {
-
-    if(user.access=== 1 ){
-        const [allAccounts,fields] = await connection.query(
-            `select * from accounts`
-        );
-        return allAccounts;
+    if (user.access === 1) {
+        const [rows] = await connection.execute("SELECT * FROM accounts");
+        return rows;
     }
-    else if(user.access=== 0){
-        let ownersId = user.id;
-        const [personalAccounts,fields] = await connection.query(
-            `select * from accounts where ownerId ="${ownersId}"`
-        );
-        return personalAccounts;
-    }
-        else return false
+
+    const [rows] = await connection.execute(
+        "SELECT * FROM accounts WHERE ownerId = ?",
+        [user.id]
+    );
+
+    return rows;
 }
 
-async function maxId(){
-    const [maxId,fields] = await connection.query(
-        `select max(id) from logins`
+// 📜 TRANSACTIONS
+async function getTransactions(accountId) {
+    const [rows] = await connection.execute(
+        "SELECT * FROM transactions WHERE fromAcc = ? OR toAcc = ?",
+        [accountId, accountId]
     );
-    return maxId[0]["max(id)"];
+    return rows;
 }
 
-async function maxAccountId(){
-    const [maxId,fields] = await connection.query(
-        `select max(acountId) from accounts`
-    );
-    return maxId[0]["max(acountId"];
-}
-async function maxTransactionId(){
-    const [maxId,fields] = await connection.query(
-        `select max(transactionId) from transactions`
-    );
-    return maxId[0]["max(transactionId)"];
-}
+// 🔐 ACCESS CHECK
+async function verifyAccountAccess(user, accountId) {
+    if (user.access === 1) return true;
 
-async function createAccounts(id,accountType,ownerId ){
-    id = await maxAccountId()+1;
-   await connection.query(
-        `insert into accounts(acountId,accountType,ownerId) values (${id},"${accountType},${ownerId}")`
+    const [rows] = await connection.execute(
+        "SELECT ownerId FROM accounts WHERE acountId = ?",
+        [accountId]
     );
+
+    return rows[0]?.ownerId === user.id;
 }
 
-async function verifyAccountAccess(user,accountId){
-    if(user.access ===1)
-        return true;
-    else {
+// 💰 BALANCE CHECK
+async function verifyBalance(accountId, amount) {
+    const [rows] = await connection.execute(
+        "SELECT balance FROM accounts WHERE acountId = ?",
+        [accountId]
+    );
 
-        const [account, fields1] = await connection.query(
-            `Select ownerId from accounts where acountId =${accountId}`
-        );
-        if(account[0].ownerId === user.id){
-            return true
-        }
-    }
-    return false
-
+    return rows[0].balance >= amount;
 }
-//transfer between two owned accounts
 
-async function transfer(user,toId,fromId,amount){
-    if(amount < 0)
-        return false;
-if(await verifyAccountAccess(user,toId) && await verifyAccountAccess(user,fromId)&& await verifyBalance(fromId,amount)){
-    let transactionId = await maxTransactionId()+1;
-    const [balance,fields1] = await connection.query(
-        `Select balance from accounts where acountId =${toId}`
+// 💸 TRANSFER
+async function transfer(user, toId, fromId, amount) {
+    if (amount <= 0) return false;
+
+    if (!(await verifyAccountAccess(user, toId)) || !(await verifyAccountAccess(user, fromId))) return false;
+    if (!(await verifyBalance(fromId, amount))) return false;
+
+    const transactionId = await nextTransactionId();
+
+    const [toBalance] = await connection.query(
+        "SELECT balance FROM accounts WHERE acountId = ?",
+        [toId]
     );
-    const [fromBalance,fields] = await connection.query(
-        `Select balance from accounts where acountId =${fromId}`
+    const [fromBalance] = await connection.query(
+        "SELECT balance FROM accounts WHERE acountId = ?",
+        [fromId]
     );
-   let newBalance = balance[0].balance + amount;
-   let newFromBalance = fromBalance[0].balance - amount;
+
+    const newToBalance = toBalance[0].balance + amount;
+    const newFromBalance = fromBalance[0].balance - amount;
+
     await connection.query(
-        `insert into transactions(transactionId,amount,fromAcc,toAcc) values (${transactionId},${amount},${fromId},${toId})`
+        "INSERT INTO transactions (transactionId, amount, fromAcc, toAcc) VALUES (?, ?, ?, ?)",
+        [transactionId, amount, fromId, toId]
+    );
+
+    await connection.query(
+        "UPDATE accounts SET balance = ? WHERE acountId = ?",
+        [newToBalance, toId]
     );
     await connection.query(
-        `update accounts set balance = ${newBalance} where acountId=${toId}`
+        "UPDATE accounts SET balance = ? WHERE acountId = ?",
+        [newFromBalance, fromId]
     );
+
+    return true;
+}
+
+// 💰 DEPOSIT / WITHDRAW (ADMIN)
+async function adminTransaction(user, fromId, toId, amount) {
+    if (user.access !== 1 || amount <= 0) return false;
+
+    const transactionId = await nextTransactionId();
+
+    if (toId) {
+        await connection.query(
+            "UPDATE accounts SET balance = balance + ? WHERE acountId = ?",
+            [amount, toId]
+        );
+    }
+
+    if (fromId) {
+        await connection.query(
+            "UPDATE accounts SET balance = balance - ? WHERE acountId = ?",
+            [amount, fromId]
+        );
+    }
+
     await connection.query(
-        `update accounts set balance = ${newFromBalance} where acountId=${fromId}`
+        "INSERT INTO transactions (transactionId, amount, fromAcc, toAcc) VALUES (?, ?, ?, ?)",
+        [transactionId, amount, fromId, toId]
     );
-return true;
-}
-return false;
-}
 
-async function adminTransactions(user,fromId,toId,amount){
-    if(user.access=== 0 || amount<0 ){
-        return false
-    }
-
-    let transactionId = await maxTransactionId()+1;
-
-    if(fromId === null){
-        //deposit
-        const [balance,fields1] = await connection.query(
-            `Select balance from accounts where acountId =${toId}`
-        );
-        let newBalance = balance[0].balance + amount;
-        await connection.query(
-            `insert into transactions(transactionId,amount,fromAcc,toAcc) values (${transactionId},${amount},${fromId},${toId})`
-        );
-        await connection.query(
-            `update accounts set balance = ${newBalance} where acountId=${toId}`
-        );
-    }
-    if(toId === null){
-        //withdraw
-        const [fromBalance,fields] = await connection.query(
-            `Select balance from accounts where acountId =${fromId}`
-        );
-        let newFromBalance = fromBalance[0].balance - amount;
-
-        await connection.query(
-            `insert into transactions(transactionId,amount,fromAcc,toAcc) values (${transactionId},${amount},${fromId},${toId})`
-        );
-        await connection.query(
-            `update accounts set balance = ${newFromBalance} where acountId=${fromId}`
-        );
-    }
+    return true;
 }
 
-async function verifyBalance(acountId,amount){
-    const [balance,fields1] = await connection.query(
-        `Select balance from accounts where acountId =${acountId}`
-    );
-    return balance[0].balance - amount >0;
+async function nextTransactionId() {
+    const [rows] = await connection.query("SELECT MAX(transactionId) as maxId FROM transactions");
+    return (rows[0].maxId || 0) + 1;
 }
 
+// 🌐 ROUTES
 
-getUser("boss").then(result => {
-    console.log(result);
-    getUserAccounts(result).then(result2 => {
-        console.log(result2)
-    })
-verifyAccountAccess(result,2).then((result3) => {
-    console.log(result3 +"account access")
-})
-    transfer(result,1,0,15)
+app.get("/public_key", (req, res) => {
+    res.json(publicKey);
 });
 
+// 🔑 LOGIN
+app.get("/accounts", async (req, res) => {
+    try {
+        const { u, p } = req.query;
 
-getTransactions(1).then(result3 => {console.log(result3)});
+        const user = decryptData(u);
+        const pass = decryptData(p);
 
-const generateKeys = () => {
-    const keys = crypto.generateKeyPairSync('rsa', {
-        modulusLength: 2048, // Recommended key size for security
-        publicKeyEncoding: {
-            type: 'spki', // Recommended for public keys
-            format: 'pem',
-        },
-        privateKeyEncoding: {
-            type: 'pkcs8', // Recommended for private keys
-            format: 'pem',
-        },
-    });
-    console.log('Private Key:', keys.privateKey);
-    console.log('Public Key:', keys.publicKey);
-    return keys;
-}
-let {publicKey, privateKey} = generateKeys();
+        const dbUser = await getUser(user);
+        if (!dbUser) return res.status(404).json("user not found");
 
-app.get("/accounts",(req, res) => {
-    const { u, p } = req.query;
+        const valid = await verifyPassword(pass, dbUser.salt, dbUser.hashed);
+        if (!valid) return res.status(403).json("invalid password");
 
-    if(!u ||!p)
-        return res.status(400).json({ error: 'invalid input' });
+        const accounts = await getUserAccounts(dbUser);
+        res.json(accounts);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json("server error");
+    }
+});
 
-     const user = decryptData(urlSafeToBase64(u));
-     const pass = decryptData(urlSafeToBase64(p));
+// 📜 TRANSACTIONS
+app.get("/transactions", async (req, res) => {
+    try {
+        const { u, p, Id } = req.query;
 
-    getUser(user).then(result => {
-        verifyPassword(pass,result.salt,result.hash,() =>{
-                console.log("accounts of user", getUserAccounts(result));
-                res.status(200).json( getUserAccounts(result));
-        },
-            () => {
-                console.log("PASSWORD INVALID FOR:", user);
-                res.status(403).json("password is invalid");
-            })
-    })
-})
-app.get("/transactions",(req, res) => {
-    const { u, p, Id } = req.query;
+        const user = decryptData(u);
+        const pass = decryptData(p);
+        const accountId = Number(decryptData(Id));
 
-    if(!u ||!p || !Id)
-        return res.status(400).json({ error: 'invalid input' });
+        const dbUser = await getUser(user);
+        const valid = await verifyPassword(pass, dbUser.salt, dbUser.hashed);
 
-    const user = decryptData(urlSafeToBase64(u));
-    const pass = decryptData(urlSafeToBase64(p));
-    const accId = decryptData(urlSafeToBase64(Id));
+        if (!valid) return res.status(403).json("invalid password");
 
-    getUser(user).then(result => {
-        verifyPassword(pass,result.salt,result.hash,() =>{
-            verifyAccountAccess(result,accId).then(result2 => {
-               if(result2) {
-                   console.log("transaction of account", getTransactions(accId));
-                   res.status(200).json(getTransactions(accId));
-               }
-               else{
-                   console.log("no account access");
-                   res.status(200).json("no account access");
-               }
-            })},
-            () => {
-                console.log("PASSWORD INVALID FOR:", user);
-                res.status(403).json("password is invalid");
-            })
-    })
-})
+        const access = await verifyAccountAccess(dbUser, accountId);
+        if (!access) return res.status(403).json("no access");
 
-app.post("/logins",(req, res) => {
-const{u, p} =req.body;
-if(!u || !p)
-    return res.status(400).json({ error: 'invalid input' });
+        const tx = await getTransactions(accountId);
+        res.json(tx);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json("server error");
+    }
+});
 
-    const user = decryptData(u);
-    const pass = decryptData(p);
-    getUser(user).then(result => {
-        if(result){
-            console.log("user exists");
-            res.status(400).json("exists");
-        }
-        else
-            createUser(user,pass)
-                res.status(200).json(result);
-                console.log("created user");
+// 📝 SIGNUP
+app.post("/logins", async (req, res) => {
+    try {
+        const { u, p } = req.body;
 
-    })
+        const user = decryptData(u);
+        const pass = decryptData(p);
 
-})
+        const exists = await getUser(user);
+        if (exists) return res.status(400).json("user exists");
 
-app.post("/account",(req, res) => {
-    const{u, p, accType} =req.body;
-    if(!u || !p || !accType)
-        return res.status(400).json({ error: 'invalid input' });
+        await createUser(user, pass);
 
-    const id = maxAccountId()+1;
-    const user = decryptData(u);
-    const accountType = decryptData(accType);
-    const pass = decryptData(p);
-    //id accountType, access
-    getUser(user).then(result => {
-        verifyPassword(pass,result.salt,result.hash,() =>{
-                createAccounts(id,accountType,result.id).then(result2 => {
-                    res.status(201).json("created account");
-                    console.log(result2);
-                }) },
-            () => {
-                console.log("PASSWORD INVALID FOR:", user);
-                res.status(403).json("password is invalid");
-            })
-    })
+        res.json("created");
+    } catch (err) {
+        console.error(err);
+        res.status(500).json("server error");
+    }
+});
 
-})
+// 💸 TRANSFER
+app.post("/transfer", async (req, res) => {
+    try {
+        const { u, p, fromAcc, toAcc, amount } = req.body;
 
-app.post("/deposit",(req, res) => {
-    const{u, p, toAcc, amount} =req.body;
-    if(!u || !p || !toAcc || !amount)
-        return res.status(400).json({ error: 'invalid input' });
+        const user = decryptData(u);
+        const pass = decryptData(p);
+        const from = Number(decryptData(fromAcc));
+        const to = Number(decryptData(toAcc));
+        const amt = Number(decryptData(amount));
 
+        const dbUser = await getUser(user);
+        const valid = await verifyPassword(pass, dbUser.salt, dbUser.hashed);
 
-    const user = decryptData(u);
-    const depositId = decryptData(toAcc);
-    const depositAmount = decryptData(amount);
-    const pass = decryptData(p);
-    //id accountType, access
-    getUser(user).then(result => {
-        verifyPassword(pass,result.salt,result.hash,() =>{
-                adminTransactions(user,null,depositId,depositAmount).then(result2 => {
-                   if(result2){
-                       res.status(201).json(result2);
-                       console.log("success");
-                   }
-                   else {
-                    console.log("invalid transaction");
-                       res.status(403).json("invalid transaction");
-                   }
-                }) },
-            () => {
-                console.log("PASSWORD INVALID FOR:", user);
-                res.status(403).json("password is invalid");
-            })
-    })
-})
+        if (!valid) return res.status(403).json("invalid password");
 
-app.post("/withdraw",(req, res) => {
-    const{u, p, fromAcc, amount} =req.body;
-    if(!u || !p || !fromAcc || !amount)
-        return res.status(400).json({ error: 'invalid input' });
+        const success = await transfer(dbUser, from, to, amt);
 
+        if (!success) return res.status(400).json("failed");
 
-    const user = decryptData(u);
-    const withdrawId = decryptData(fromAcc);
-    const withdrawAmount = decryptData(amount);
-    const pass = decryptData(p);
-    //id accountType, access
-    getUser(user).then(result => {
-        verifyPassword(pass,result.salt,result.hash,() =>{
-                adminTransactions(user,withdrawId,null,withdrawAmount).then(result2 => {
-                    if(result2){
-                        res.status(201).json(result2);
-                        console.log("success");
-                    }
-                    else {
-                        console.log("invalid transaction");
-                        res.status(403).json("invalid transaction");
-                    }
-                }) },
-            () => {
-                console.log("PASSWORD INVALID FOR:", user);
-                res.status(403).json("password is invalid");
-            })
-    })
-})
-
-app.post("/transfer",(req, res) => {
-    const{u, p, fromAcc, toAcc, amount} =req.body;
-    if(!u || !p || !fromAcc || !amount||!toAcc)
-        return res.status(400).json({ error: 'invalid input' });
-
-
-    const user = decryptData(u);
-    const fromId = decryptData(fromAcc);
-    const toId = decryptData(toAcc);
-    const transferAmount = decryptData(amount);
-    const pass = decryptData(p);
-    //id accountType, access
-    getUser(user).then(result => {
-        verifyPassword(pass,result.salt,result.hash,() =>{
-                transfer(user,toId,fromId,transferAmount).then(result2 => {
-                    if(result2){
-                        res.status(201).json(result2);
-                        console.log("success");
-                    }
-                    else {
-                        console.log("invalid transaction");
-                        res.status(403).json("invalid transaction");
-                    }
-                }) },
-            () => {
-                console.log("PASSWORD INVALID FOR:", user);
-                res.status(403).json("password is invalid");
-            })
-    })
-})
-getUser("aidan").then(result => {console.log(result)});
-getUser("billy bob").then(result => {console.log(result)});
-
-
+        res.json("success");
+    } catch (err) {
+        console.error(err);
+        res.status(500).json("server error");
+    }
+});
 
 app.listen(port, () => {
-    console.log(`Server started on port ${port}`);
+    console.log(`✅ Server running on http://localhost:${port}`);
 });
-

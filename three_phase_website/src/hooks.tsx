@@ -41,6 +41,7 @@ export function arrayBufferToBase64(buffer: ArrayBuffer): string {
 }
 
 async function encrypt(dataToEncode: string) {
+
     if (!key) {
         return;
     }
@@ -61,3 +62,4 @@ export const importPublicKey = async (pem: string) => {
         hash: "SHA-256"
     }, true, ["encrypt"]);
 };
+
