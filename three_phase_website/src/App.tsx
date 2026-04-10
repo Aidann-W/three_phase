@@ -5,6 +5,7 @@ function App() {
     const [user, setUser] = useState("");
     const [pass, setPass] = useState("");
     const [loggedIn, setLoggedIn] = useState(false);
+    const [transactionMenu, setTransactionMenu] = useState(false);
     const [accounts, setAccounts] = useState<any[]>([]);
     const [selectedAcc, setSelectedAcc] = useState<number | null>(null);
     const [transactions, setTransactions] = useState<any[]>([]);
@@ -27,7 +28,7 @@ function App() {
 
         const encoded = new TextEncoder().encode(data);
         const encrypted = await window.crypto.subtle.encrypt(
-            { name: "RSA-OAEP" },
+            {name: "RSA-OAEP"},
             key,
             encoded
         );
@@ -62,6 +63,12 @@ function App() {
         setLoggedIn(true);
     }
 
+    function transactionSwitch() {
+        setTransactionMenu(!transactionMenu);
+    }
+
+
+
     // 📝 SIGNUP
     async function signup() {
         const u = await encrypt(user);
@@ -72,7 +79,7 @@ function App() {
             headers: {
                 "Content-Type": "application/json",
             },
-            body: JSON.stringify({ u, p }),
+            body: JSON.stringify({u, p}),
         });
 
         alert("User created!");
@@ -114,14 +121,14 @@ function App() {
                 amount: await encrypt(amount.toString()),
             }),
         });
-login();
+        login();
         alert("Transfer complete");
     }
 
-    // 🔐 LOGIN PAGE
+    // LOGIN PAGE
     if (!loggedIn) {
         return (
-            <div style={{ padding: "20px" }}>
+            <div style={{padding: "20px"}}>
                 <h1>Bank App</h1>
 
                 <input
@@ -129,7 +136,7 @@ login();
                     value={user}
                     onChange={(e) => setUser(e.target.value)}
                 />
-                <br />
+                <br/>
 
                 <input
                     type="password"
@@ -137,8 +144,8 @@ login();
                     value={pass}
                     onChange={(e) => setPass(e.target.value)}
                 />
-                <br />
-                <br />
+                <br/>
+                <br/>
 
                 <button onClick={login} disabled={!key}>
                     Login
@@ -151,46 +158,62 @@ login();
         );
     }
 
-    // 📊 DASHBOARD
-    return (
-        <div style={{ padding: "20px" }}>
-            <h1>Dashboard</h1>
+    // DASHBOARD
 
-            <h2>Accounts</h2>
-            {accounts.map((acc) => (
-                <div
-                    key={acc.acountId}
-                    style={{
-                        border: "1px solid black",
-                        margin: "10px",
-                        padding: "10px",
-                    }}
-                >
-                    <p>ID: {acc.acountId}</p>
-                    <p>Balance: ${acc.balance}</p>
+        return (
 
-                    <button onClick={() => loadTransactions(acc.acountId)}>
-                        View Transactions
-                    </button>
-                </div>
-            ))}
+            <div style={{padding: "20px"}}>
+                {!transactionMenu && (
+                   <>
+                       <h1>Dashboard</h1>
 
-            {selectedAcc !== null && (
-                <>
-                    <h2>Transactions (Account {selectedAcc})</h2>
-                    {transactions.map((t) => (
-                        <div key={t.transactionId}>
-                            {t.fromAcc} → {t.toAcc} : ${t.amount}
-                        </div>
-                    ))}
-                </>
-            )}
+                       <h2>Accounts</h2>
+                       {accounts.map((acc) => (
+                           <div
+                               key={acc.acountId}
+                               style={{
+                                   border: "1px solid black",
+                                   margin: "10px",
+                                   padding: "10px",
+                               }}
+                           >
+                               <p>ID: {acc.acountId}</p>
+                               <p>Balance: ${acc.balance}</p>
 
-            <TransferForm transfer={transfer} />
-        </div>
-    );
+                               <button onClick={() => loadTransactions(acc.acountId)}>
+                                   View Transactions
+                               </button>
+                           </div>
+                       ))}
+                   </>
+                )}
+
+
+                {selectedAcc !== null && (
+                    <>
+                        <h2>Transactions (Account {selectedAcc})</h2>
+                        {transactions.map((t) => (
+                            <div key={t.transactionId}>
+                                {t.fromAcc} → {t.toAcc} : ${t.amount}
+                            </div>
+                        ))}
+                    </>
+                )}
+
+                {transactionMenu && (
+                    <TransferForm transfer={transfer}/>
+                )}
+
+
+               <button onClick={transactionSwitch}>
+                   Go to Transactions or Go Back to DashBoard
+               </button>
+            </div>
+        );
+
+
+
 }
-
 // 💸 TRANSFER COMPONENT
 function TransferForm({
                           transfer,
@@ -200,6 +223,7 @@ function TransferForm({
     const [from, setFrom] = useState("");
     const [to, setTo] = useState("");
     const [amount, setAmount] = useState("");
+
 
     return (
         <div style={{ marginTop: "30px" }}>
@@ -231,6 +255,7 @@ function TransferForm({
             >
                 Send
             </button>
+
         </div>
     );
 }
